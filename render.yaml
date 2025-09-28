@@ -12,7 +12,7 @@ services:
       python -m pip install --upgrade pip setuptools wheel
       echo "� Installing application dependencies..."
       pip install --no-cache-dir -r requirements.txt || pip install --no-cache-dir -r requirements-minimal.txt
-    startCommand: gunicorn --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --max-requests 1000 --preload prediction_server:app
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --max-requests 1000 --preload app:app
     envVars:
       - key: FLASK_ENV
         value: production
