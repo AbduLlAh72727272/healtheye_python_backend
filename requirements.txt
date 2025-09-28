@@ -17,8 +17,6 @@ Pillow>=10.1.0
 
 # Machine Learning - Latest compatible version
 tensorflow-cpu>=2.15.0
-# Add support for TensorFlow Lite Select TF Ops
-tensorflow-io-gcs-filesystem>=0.34.0
 
 # WSGI server for production
 gunicorn>=21.2.0
