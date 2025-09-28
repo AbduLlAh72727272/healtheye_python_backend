@@ -1,26 +1,26 @@
-# HealthEye Python backend requirements - STABLE VERSION
-# Tested on Python 3.10.12 for maximum compatibility
+# HealthEye Python backend requirements - Python 3.13 Compatible
+# Updated for Render deployment compatibility
 
-# Core dependencies
-setuptools==68.0.0
-wheel==0.40.0
-pip==23.2.1
+# Core dependencies - Python 3.13 compatible versions
+setuptools>=70.0.0
+wheel>=0.42.0
+pip>=24.0
 
-# Flask framework
-Flask==2.3.3
-flask-cors==4.0.0
-Werkzeug==2.3.7
+# Flask framework - Latest stable versions
+Flask>=2.3.0,<3.0.0
+flask-cors>=4.0.0
+Werkzeug>=2.3.0,<3.0.0
 
-# Scientific computing
-numpy==1.24.3
-Pillow==10.0.1
+# Scientific computing - Python 3.13 compatible
+numpy>=1.26.0
+Pillow>=10.1.0
 
-# Machine Learning (CPU-optimized for Render)
-tensorflow-cpu==2.13.0
+# Machine Learning - Latest compatible version
+tensorflow-cpu>=2.15.0
 
 # WSGI server for production
-gunicorn==21.2.0
+gunicorn>=21.2.0
 
 # Additional utilities
-requests==2.31.0
-python-dotenv==1.0.0
+requests>=2.31.0
+python-dotenv>=1.0.0

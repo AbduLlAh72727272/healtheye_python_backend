@@ -1,18 +1,18 @@
 services:
-  # Python Prediction API for HealthEye - Multi-Fallback Deployment
+  # Python Prediction API for HealthEye - Python 3.13 Compatible
   - type: web
     name: healtheye-python-backend
     env: python
     region: oregon
     plan: free
-    runtime: python-3.10.12
     buildCommand: |
-      echo "🔧 Setting up Python environment..."
+      echo "🔧 Python version check..."
       python --version
+      echo "📦 Upgrading pip and build tools..."
       python -m pip install --upgrade pip setuptools wheel
-      echo "📦 Installing dependencies..."
-      pip install -r requirements.txt
-    startCommand: gunicorn --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --max-requests 1000 prediction_server:app
+      echo "� Installing application dependencies..."
+      pip install --no-cache-dir -r requirements.txt || pip install --no-cache-dir -r requirements-minimal.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --max-requests 1000 --preload prediction_server:app
     envVars:
       - key: FLASK_ENV
         value: production
