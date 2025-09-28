@@ -1,9 +1,9 @@
-# HealthEye Python backend requirements
-Flask==3.0.3
-flask-cors==4.0.1
-numpy==1.26.4
-Pillow==10.4.0
-tensorflow-cpu==2.15.0
-# Alternative: Use tflite-runtime for lighter footprint
-# tflite-runtime==2.14.0
+# HealthEye Python backend requirements - STABLE VERSION
+# Tested on Python 3.10.12 for maximum compatibility
+
+Flask==2.3.3
+flask-cors==4.0.0
+numpy==1.24.3
+Pillow==10.0.1
+tensorflow-cpu==2.13.0
 gunicorn==21.2.0

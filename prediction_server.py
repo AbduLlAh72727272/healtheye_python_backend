@@ -8,11 +8,32 @@ import os
 import io
 import base64
 import numpy as np
-import tensorflow as tf
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
 import json
+
+# Try to import TensorFlow with fallbacks
+TF_AVAILABLE = False
+TFLITE_AVAILABLE = False
+
+try:
+    import tensorflow as tf
+    TF_AVAILABLE = True
+    print("✅ TensorFlow imported successfully")
+except ImportError as e:
+    print(f"❌ TensorFlow not available: {e}")
+    tf = None
+
+# Try TensorFlow Lite runtime as fallback
+if not TF_AVAILABLE:
+    try:
+        from tflite_runtime.interpreter import Interpreter as TFLiteInterpreter
+        TFLITE_AVAILABLE = True
+        print("✅ TensorFlow Lite runtime imported successfully")
+    except ImportError as e:
+        print(f"❌ TensorFlow Lite runtime not available: {e}")
+        TFLiteInterpreter = None
 
 app = Flask(__name__)
 CORS(app)
@@ -185,18 +206,21 @@ def predict_image(img_array):
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint"""
+    """Health check endpoint with deployment info"""
     return jsonify({
-        'status': 'OK',
-        'message': 'TensorFlow Prediction Server is running',
+        'status': 'healthy',
+        'service': 'HealthEye Prediction API',
         'model_loaded': model_loaded,
         'model_error': model_error,
         'can_predict': model_loaded and model_error is None,
+        'tensorflow_available': TF_AVAILABLE,
+        'tflite_available': TFLITE_AVAILABLE,
+        'deployment_type': 'tensorflow' if TF_AVAILABLE else 'tflite' if TFLITE_AVAILABLE else 'minimal',
         'model_info': {
             'num_classes': NUM_CLASSES,
             'input_size': IMG_SIZE,
             'class_labels_count': len(class_labels),
-            'backend': TFLITE_BACKEND
+            'backend': TFLITE_BACKEND if 'TFLITE_BACKEND' in globals() else 'none'
         }
     })
 
