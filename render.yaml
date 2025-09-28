@@ -1,0 +1,16 @@
+services:
+  # Python TensorFlow Prediction API for HealthEye
+  - type: web
+    name: healtheye-python-backend
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --timeout 120 --workers 1 prediction_server:app
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: PORT
+        value: 10000
+    healthCheckPath: /health
+    autoDeploy: true

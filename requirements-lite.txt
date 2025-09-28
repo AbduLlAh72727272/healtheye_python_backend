@@ -1,0 +1,9 @@
+# HealthEye Python backend requirements - LIGHTWEIGHT VERSION
+# Use this if TensorFlow causes memory issues on Render free tier
+
+Flask==3.0.3
+flask-cors==4.0.1
+numpy==1.26.4
+Pillow==10.4.0
+tflite-runtime==2.14.0  # Much lighter than full TensorFlow
+gunicorn==21.2.0
