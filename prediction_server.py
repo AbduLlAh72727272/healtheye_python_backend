@@ -129,15 +129,16 @@ def load_model():
         if env_model_path:
             search_paths.append(env_model_path)
         # Search common locations relative to backend folder and repo root
+        # Prioritize model_32.tflite as it may have better compatibility
         search_paths.extend([
-            os.path.join(BASE_DIR, 'assets', 'models', 'model.tflite'),
             os.path.join(BASE_DIR, 'assets', 'models', 'model_32.tflite'),
-            os.path.join(BASE_DIR, 'model.tflite'),
+            os.path.join(BASE_DIR, 'assets', 'models', 'model.tflite'),
             os.path.join(BASE_DIR, 'model_32.tflite'),
-            os.path.join(BASE_DIR, '..', 'assets', 'models', 'model.tflite'),
+            os.path.join(BASE_DIR, 'model.tflite'),
             os.path.join(BASE_DIR, '..', 'assets', 'models', 'model_32.tflite'),
-            os.path.join(BASE_DIR, '..', 'models', 'model.tflite'),
+            os.path.join(BASE_DIR, '..', 'assets', 'models', 'model.tflite'),
             os.path.join(BASE_DIR, '..', 'models', 'model_32.tflite'),
+            os.path.join(BASE_DIR, '..', 'models', 'model.tflite'),
         ])
         
         model_path = None
