@@ -1,9 +1,26 @@
 # HealthEye Python backend requirements - STABLE VERSION
 # Tested on Python 3.10.12 for maximum compatibility
 
+# Core dependencies
+setuptools==68.0.0
+wheel==0.40.0
+pip==23.2.1
+
+# Flask framework
 Flask==2.3.3
 flask-cors==4.0.0
+Werkzeug==2.3.7
+
+# Scientific computing
 numpy==1.24.3
 Pillow==10.0.1
+
+# Machine Learning (CPU-optimized for Render)
 tensorflow-cpu==2.13.0
+
+# WSGI server for production
 gunicorn==21.2.0
+
+# Additional utilities
+requests==2.31.0
+python-dotenv==1.0.0
