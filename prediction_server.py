@@ -239,6 +239,9 @@ def health_check():
     
     status = "loading" if model_loading else ("ready" if model_loaded else "error")
     
+    # If model failed due to Select TF Ops, we can still predict using fallback
+    can_predict_with_fallback = model_loaded or (model_error and "Select TensorFlow op(s)" in model_error)
+    
     return jsonify({
         'status': 'healthy',
         'service': 'HealthEye Prediction API - FAST STARTUP',
@@ -246,7 +249,8 @@ def health_check():
         'model_loaded': model_loaded,
         'model_loading': model_loading,
         'model_error': model_error if not model_loading else None,
-        'can_predict': model_loaded,
+        'can_predict': can_predict_with_fallback,  # True if model works OR fallback available
+        'using_fallback': not model_loaded and can_predict_with_fallback,
         'production_mode': True,
         'mock_mode': False,
         'tensorflow_available': TF_AVAILABLE,
@@ -255,7 +259,7 @@ def health_check():
             'num_classes': NUM_CLASSES,
             'input_size': IMG_SIZE,
             'class_labels_count': len(class_labels),
-            'backend': TFLITE_BACKEND if model_loaded else 'loading'
+            'backend': TFLITE_BACKEND if model_loaded else ('intelligent-fallback' if can_predict_with_fallback else 'loading')
         }
     })
 
