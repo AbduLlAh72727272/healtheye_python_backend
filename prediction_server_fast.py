@@ -13,7 +13,6 @@ from flask_cors import CORS
 from PIL import Image
 import json
 import threading
-import time
 
 # Suppress TensorFlow warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -55,6 +54,8 @@ model = None
 model_loaded = False
 model_error = None
 model_loading = False
+model_loading_event = threading.Event()  # Efficient synchronization
+model_load_lock = threading.Lock()  # Prevent race conditions
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Use TensorFlow Lite
@@ -66,47 +67,49 @@ except Exception:
     TFLITE_BACKEND = 'none'
 
 def preprocess_image(image_bytes):
-    """Fast image preprocessing"""
+    """Fast image preprocessing with optimized resampling"""
     try:
         image = Image.open(io.BytesIO(image_bytes))
         if image.mode != 'RGB':
             image = image.convert('RGB')
-        image = image.resize(IMG_SIZE, Image.Resampling.LANCZOS)
-        img_array = np.array(image, dtype=np.float32) / 255.0
-        img_array = np.expand_dims(img_array, axis=0)
-        return img_array
+        # Use BILINEAR instead of LANCZOS - much faster with minimal quality loss
+        image = image.resize(IMG_SIZE, Image.Resampling.BILINEAR)
+        # Direct conversion to normalized array - avoid intermediate steps
+        img_array = np.asarray(image, dtype=np.float32) / 255.0
+        return np.expand_dims(img_array, axis=0)
     except Exception as e:
         raise Exception(f"Image preprocessing failed: {e}")
 
+def find_model_path():
+    """Efficiently find model file - returns on first match"""
+    search_paths = [
+        os.path.join(BASE_DIR, 'assets', 'models', 'model.tflite'),
+        os.path.join(BASE_DIR, 'assets', 'models', 'model_32.tflite'),
+        os.path.join(BASE_DIR, 'model.tflite'),
+        os.path.join(BASE_DIR, '..', 'assets', 'models', 'model.tflite'),
+    ]
+    
+    for path in search_paths:
+        if os.path.exists(path):
+            return path
+    
+    raise FileNotFoundError(f"Model file not found. Searched: {search_paths}")
+
 def load_model_async():
-    """Load model asynchronously to avoid startup timeout"""
+    """Load model asynchronously with efficient synchronization"""
     global model, model_loaded, model_error, model_loading
     
-    if model_loading:
-        return
-    
-    model_loading = True
+    # Use lock to prevent multiple threads from loading simultaneously
+    with model_load_lock:
+        if model_loading or model_loaded:
+            return
+        model_loading = True
     
     try:
         print("🔄 Starting async model loading...")
         
-        # Model search paths
-        search_paths = [
-            os.path.join(BASE_DIR, 'assets', 'models', 'model.tflite'),
-            os.path.join(BASE_DIR, 'assets', 'models', 'model_32.tflite'),
-            os.path.join(BASE_DIR, 'model.tflite'),
-            os.path.join(BASE_DIR, '..', 'assets', 'models', 'model.tflite'),
-        ]
-        
-        model_path = None
-        for path in search_paths:
-            if os.path.exists(path):
-                model_path = path
-                break
-
-        if model_path is None:
-            raise FileNotFoundError(f"Model file not found. Searched: {search_paths}")
-
+        # Find model efficiently
+        model_path = find_model_path()
         print(f"📂 Loading model from: {model_path}")
         
         # Load with timeout protection
@@ -133,6 +136,7 @@ def load_model_async():
         print(f"❌ Model loading failed: {e}")
     finally:
         model_loading = False
+        model_loading_event.set()  # Signal that loading is complete
 
 def predict_image(img_array):
     """Make prediction using the loaded model"""
@@ -188,21 +192,21 @@ def health_check():
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    """Prediction endpoint with model loading check"""
+    """Prediction endpoint with efficient model loading wait"""
     try:
-        # Start model loading if needed
+        # Start model loading if needed (singleton pattern prevents duplicates)
         if not model_loaded and not model_loading and not model_error:
-            thread = threading.Thread(target=load_model_async)
-            thread.daemon = True
+            thread = threading.Thread(target=load_model_async, daemon=True)
             thread.start()
         
-        # Wait for model to load (with timeout)
-        wait_time = 0
-        max_wait = 30  # 30 seconds max wait
-        
-        while model_loading and wait_time < max_wait:
-            time.sleep(0.5)
-            wait_time += 0.5
+        # Efficient wait using Event instead of busy-wait polling
+        if model_loading:
+            # Wait up to 30 seconds for model to load
+            if not model_loading_event.wait(timeout=30):
+                return jsonify({
+                    'success': False,
+                    'error': 'Model loading timeout - please try again'
+                }), 503
         
         if not model_loaded:
             if model_loading:
@@ -242,20 +246,18 @@ def predict():
                 'error': f'Prediction failed: {e}'
             }), 500
         
-        # Format results
-        top_indices = np.argsort(predictions)[::-1]
-        top_5_predictions = []
+        # Efficient result formatting using vectorized operations
+        top_indices = np.argsort(predictions)[::-1][:5]  # Get only top 5
         
-        for i in range(min(5, len(top_indices))):
-            idx = top_indices[i]
-            confidence = float(predictions[idx])
-            label = class_labels[idx] if idx < len(class_labels) else f"Class_{idx}"
-            
-            top_5_predictions.append({
-                'label': label,
-                'confidence': confidence,
-                'percentage': confidence * 100
-            })
+        # Build results efficiently
+        top_5_predictions = [
+            {
+                'label': class_labels[idx] if idx < len(class_labels) else f"Class_{idx}",
+                'confidence': float(predictions[idx]),
+                'percentage': float(predictions[idx]) * 100
+            }
+            for idx in top_indices
+        ]
         
         top_prediction = top_5_predictions[0] if top_5_predictions else None
         
