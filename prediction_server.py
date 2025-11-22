@@ -157,6 +157,10 @@ def predict_image(img_array):
     except Exception as e:
         raise Exception(f"Prediction failed: {e}")
 
+# Cache configuration for fallback predictions
+FALLBACK_CACHE_SIZE_LIMIT = 100
+CONFIDENCE_ADJUSTMENT = 0.15  # Adjustment to vary confidence from base value
+
 # Cache for fallback predictions to avoid recalculation
 _fallback_cache = {}
 _fallback_cache_lock = threading.Lock()
@@ -211,7 +215,7 @@ def intelligent_fallback_prediction(image_bytes):
     # Generate confidence efficiently
     confidence_variation = (hash_int % 100) / 100.0 * 0.3
     primary_confidence = np.clip(
-        primary_pattern['base_confidence'] + confidence_variation - 0.15,
+        primary_pattern['base_confidence'] + confidence_variation - CONFIDENCE_ADJUSTMENT,
         0.50, 0.95
     )
     
@@ -235,10 +239,10 @@ def intelligent_fallback_prediction(image_bytes):
         secondary_idx = class_labels.index(secondary_class)
         predictions[secondary_idx] = confidence
     
-    # Cache result
+    # Cache result with size limit
     with _fallback_cache_lock:
-        # Limit cache size
-        if len(_fallback_cache) > 100:
+        # Limit cache size to prevent unbounded memory growth
+        if len(_fallback_cache) >= FALLBACK_CACHE_SIZE_LIMIT:
             _fallback_cache.clear()
         _fallback_cache[image_hash] = predictions
     

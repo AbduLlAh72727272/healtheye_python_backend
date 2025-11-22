@@ -161,7 +161,7 @@ def benchmark_threading_wait():
     thread.start()
     
     while loading and wait_time < max_wait:
-        time.sleep(0.01)  # Simulating 0.5s but faster for test
+        time.sleep(0.01)  # Faster sleep for testing
         wait_time += 0.01
     poll_time = time.perf_counter() - start
     

@@ -215,8 +215,9 @@ def load_model_async():
         model_loaded = False
         using_fallback = False
     finally:
+        # Always reset model_loading and set event, even on exception
         model_loading = False
-        model_loading_event.set()  # Signal that loading is complete
+        model_loading_event.set()  # Signal that loading is complete (success or failure)
 
 def predict_image(img_array):
     """Make prediction with fallback support"""
