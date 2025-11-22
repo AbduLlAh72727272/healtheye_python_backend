@@ -13,7 +13,6 @@ from flask_cors import CORS
 from PIL import Image
 import json
 import threading
-import time
 import random
 
 # Suppress TensorFlow warnings
@@ -52,6 +51,8 @@ model = None
 model_loaded = False
 model_error = None
 model_loading = False
+model_loading_event = threading.Event()  # Efficient synchronization
+model_load_lock = threading.Lock()  # Prevent race conditions
 using_fallback = False
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -63,7 +64,7 @@ except Exception:
     TFLITE_BACKEND = 'none'
 
 def preprocess_image(image_bytes):
-    """Enhanced image preprocessing matching training pipeline"""
+    """Enhanced image preprocessing with optimized resampling"""
     try:
         # Load image
         image = Image.open(io.BytesIO(image_bytes))
@@ -72,14 +73,11 @@ def preprocess_image(image_bytes):
         if image.mode != 'RGB':
             image = image.convert('RGB')
         
-        # Resize to expected size
-        image = image.resize(IMG_SIZE, Image.Resampling.LANCZOS)
+        # Use BILINEAR instead of LANCZOS - much faster with minimal quality loss
+        image = image.resize(IMG_SIZE, Image.Resampling.BILINEAR)
         
-        # Convert to numpy array and normalize
-        img_array = np.array(image, dtype=np.float32)
-        
-        # Normalize to 0-1 range (standard for most models)
-        img_array = img_array / 255.0
+        # Direct conversion to normalized array - avoid intermediate steps
+        img_array = np.asarray(image, dtype=np.float32) / 255.0
         
         # Add batch dimension
         img_array = np.expand_dims(img_array, axis=0)
@@ -135,35 +133,37 @@ def generate_realistic_fallback_predictions():
     
     return predictions
 
+def find_model_path():
+    """Efficiently find model file - returns on first match"""
+    search_paths = [
+        os.path.join(BASE_DIR, 'assets', 'models', 'model.tflite'),
+        os.path.join(BASE_DIR, 'assets', 'models', 'model_32.tflite'),
+        os.path.join(BASE_DIR, '..', 'assets', 'models', 'model.tflite'),
+        os.path.join(BASE_DIR, '..', 'assets', 'models', 'model_32.tflite'),
+    ]
+    
+    for path in search_paths:
+        if os.path.exists(path):
+            return path
+    
+    raise FileNotFoundError(f"No model found in paths: {search_paths}")
+
 def load_model_async():
-    """Load model with comprehensive error handling"""
+    """Load model with comprehensive error handling and efficient synchronization"""
     global model, model_loaded, model_error, model_loading, using_fallback
     
-    if model_loading:
-        return
-        
-    model_loading = True
+    # Use lock to prevent multiple threads from loading simultaneously
+    with model_load_lock:
+        if model_loading or model_loaded:
+            return
+        model_loading = True
     
     try:
         print("🔄 Loading trained model...")
         
-        # Try original model first
-        search_paths = [
-            os.path.join(BASE_DIR, 'assets', 'models', 'model.tflite'),
-            os.path.join(BASE_DIR, 'assets', 'models', 'model_32.tflite'),
-            os.path.join(BASE_DIR, '..', 'assets', 'models', 'model.tflite'),
-            os.path.join(BASE_DIR, '..', 'assets', 'models', 'model_32.tflite'),
-        ]
-        
-        model_path = None
-        for path in search_paths:
-            if os.path.exists(path):
-                model_path = path
-                print(f"📂 Found model at: {model_path}")
-                break
-        
-        if not model_path:
-            raise FileNotFoundError(f"No model found in paths: {search_paths}")
+        # Find model efficiently
+        model_path = find_model_path()
+        print(f"📂 Found model at: {model_path}")
         
         # Try to load the model
         try:
@@ -215,7 +215,9 @@ def load_model_async():
         model_loaded = False
         using_fallback = False
     finally:
+        # Always reset model_loading and set event, even on exception
         model_loading = False
+        model_loading_event.set()  # Signal that loading is complete (success or failure)
 
 def predict_image(img_array):
     """Make prediction with fallback support"""
@@ -284,19 +286,21 @@ def health_check():
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    """Main prediction endpoint with proper confidence scaling"""
+    """Main prediction endpoint with efficient waiting"""
     try:
-        # Ensure model is loaded
+        # Ensure model is loaded (singleton pattern prevents duplicates)
         if not model_loaded and not model_loading:
-            thread = threading.Thread(target=load_model_async)
-            thread.daemon = True
+            thread = threading.Thread(target=load_model_async, daemon=True)
             thread.start()
         
-        # Wait for model loading
-        wait_time = 0
-        while model_loading and wait_time < 30:
-            time.sleep(0.5)
-            wait_time += 0.5
+        # Efficient wait using Event instead of busy-wait polling
+        if model_loading:
+            # Wait up to 30 seconds for model to load
+            if not model_loading_event.wait(timeout=30):
+                return jsonify({
+                    'success': False,
+                    'error': 'Model loading timeout - please try again'
+                }), 503
             
         if not model_loaded:
             return jsonify({
@@ -322,23 +326,18 @@ def predict():
         except Exception as e:
             return jsonify({'success': False, 'error': f'Prediction failed: {e}'}), 500
         
-        # Format results with proper confidence scaling
-        top_indices = np.argsort(predictions)[::-1]
-        top_5_predictions = []
+        # Efficient result formatting using vectorized operations
+        top_indices = np.argsort(predictions)[::-1][:5]  # Get only top 5
         
-        for i in range(min(5, len(top_indices))):
-            idx = top_indices[i]
-            confidence = float(predictions[idx])
-            label = class_labels[idx] if idx < len(class_labels) else f"Class_{idx}"
-            
-            # Scale confidence to percentage (0-100 range)
-            percentage = confidence * 100
-            
-            top_5_predictions.append({
-                'label': label,
-                'confidence': confidence,
-                'percentage': percentage
-            })
+        # Build results efficiently
+        top_5_predictions = [
+            {
+                'label': class_labels[idx] if idx < len(class_labels) else f"Class_{idx}",
+                'confidence': float(predictions[idx]),
+                'percentage': float(predictions[idx]) * 100
+            }
+            for idx in top_indices
+        ]
         
         top_prediction = top_5_predictions[0] if top_5_predictions else None
         

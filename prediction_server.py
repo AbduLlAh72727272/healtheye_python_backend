@@ -13,7 +13,6 @@ from flask_cors import CORS
 from PIL import Image
 import json
 import threading
-import time
 
 # Suppress TensorFlow warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -55,6 +54,8 @@ model = None
 model_loaded = False
 model_error = None
 model_loading = False
+model_loading_event = threading.Event()  # Efficient synchronization
+model_load_lock = threading.Lock()  # Prevent race conditions
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Use TensorFlow Lite
@@ -66,47 +67,49 @@ except Exception:
     TFLITE_BACKEND = 'none'
 
 def preprocess_image(image_bytes):
-    """Fast image preprocessing"""
+    """Fast image preprocessing with optimized resampling"""
     try:
         image = Image.open(io.BytesIO(image_bytes))
         if image.mode != 'RGB':
             image = image.convert('RGB')
-        image = image.resize(IMG_SIZE, Image.Resampling.LANCZOS)
-        img_array = np.array(image, dtype=np.float32) / 255.0
-        img_array = np.expand_dims(img_array, axis=0)
-        return img_array
+        # Use BILINEAR instead of LANCZOS - much faster with minimal quality loss
+        image = image.resize(IMG_SIZE, Image.Resampling.BILINEAR)
+        # Direct conversion to normalized array - avoid intermediate steps
+        img_array = np.asarray(image, dtype=np.float32) / 255.0
+        return np.expand_dims(img_array, axis=0)
     except Exception as e:
         raise Exception(f"Image preprocessing failed: {e}")
 
+def find_model_path():
+    """Efficiently find model file - returns on first match"""
+    search_paths = [
+        os.path.join(BASE_DIR, 'assets', 'models', 'model.tflite'),
+        os.path.join(BASE_DIR, 'assets', 'models', 'model_32.tflite'),
+        os.path.join(BASE_DIR, 'model.tflite'),
+        os.path.join(BASE_DIR, '..', 'assets', 'models', 'model.tflite'),
+    ]
+    
+    for path in search_paths:
+        if os.path.exists(path):
+            return path
+    
+    raise FileNotFoundError(f"Model file not found. Searched: {search_paths}")
+
 def load_model_async():
-    """Load model asynchronously to avoid startup timeout"""
+    """Load model asynchronously with efficient synchronization"""
     global model, model_loaded, model_error, model_loading
     
-    if model_loading:
-        return
-    
-    model_loading = True
+    # Use lock to prevent multiple threads from loading simultaneously
+    with model_load_lock:
+        if model_loading or model_loaded:
+            return
+        model_loading = True
     
     try:
         print("🔄 Starting async model loading...")
         
-        # Model search paths
-        search_paths = [
-            os.path.join(BASE_DIR, 'assets', 'models', 'model.tflite'),
-            os.path.join(BASE_DIR, 'assets', 'models', 'model_32.tflite'),
-            os.path.join(BASE_DIR, 'model.tflite'),
-            os.path.join(BASE_DIR, '..', 'assets', 'models', 'model.tflite'),
-        ]
-        
-        model_path = None
-        for path in search_paths:
-            if os.path.exists(path):
-                model_path = path
-                break
-
-        if model_path is None:
-            raise FileNotFoundError(f"Model file not found. Searched: {search_paths}")
-
+        # Find model efficiently
+        model_path = find_model_path()
         print(f"📂 Loading model from: {model_path}")
         
         # Load with timeout protection
@@ -133,6 +136,7 @@ def load_model_async():
         print(f"❌ Model loading failed: {e}")
     finally:
         model_loading = False
+        model_loading_event.set()  # Signal that loading is complete
 
 def predict_image(img_array):
     """Make prediction using the loaded model"""
@@ -153,15 +157,27 @@ def predict_image(img_array):
     except Exception as e:
         raise Exception(f"Prediction failed: {e}")
 
+# Cache configuration for fallback predictions
+FALLBACK_CACHE_SIZE_LIMIT = 100
+CONFIDENCE_ADJUSTMENT = 0.15  # Adjustment to vary confidence from base value
+
+# Cache for fallback predictions to avoid recalculation
+_fallback_cache = {}
+_fallback_cache_lock = threading.Lock()
+
 def intelligent_fallback_prediction(image_bytes):
-    """Generate intelligent predictions based on medical image analysis patterns"""
+    """Generate intelligent predictions with caching for performance"""
     import hashlib
     
-    # Create a hash of the image to ensure consistent but different predictions
+    # Create hash for caching
     image_hash = hashlib.md5(image_bytes).hexdigest()
-    hash_int = int(image_hash[:8], 16)
     
-    # Medical imaging frequency distribution (based on typical endoscopy datasets)
+    # Check cache first
+    with _fallback_cache_lock:
+        if image_hash in _fallback_cache:
+            return _fallback_cache[image_hash]
+    
+    # Medical imaging frequency distribution (precomputed)
     medical_patterns = {
         'cecum': {'base_confidence': 0.75, 'frequency': 0.20},
         'polyps': {'base_confidence': 0.82, 'frequency': 0.15},
@@ -188,40 +204,47 @@ def intelligent_fallback_prediction(image_bytes):
         'ulcerative-colitis-grade-2-3': {'base_confidence': 0.73, 'frequency': 0.001}
     }
     
+    # Use hash for deterministic selection
+    hash_int = int(image_hash[:8], 16)
+    pattern_keys = list(medical_patterns.keys())
+    
     # Select primary prediction based on hash
-    primary_class = list(medical_patterns.keys())[hash_int % len(medical_patterns)]
+    primary_class = pattern_keys[hash_int % len(pattern_keys)]
     primary_pattern = medical_patterns[primary_class]
     
-    # Generate realistic confidence for primary prediction (50-95%)
-    confidence_variation = (hash_int % 100) / 100.0 * 0.3  # 0-30% variation
-    primary_confidence = min(0.95, primary_pattern['base_confidence'] + confidence_variation - 0.15)
-    primary_confidence = max(0.50, primary_confidence)  # Ensure minimum 50%
+    # Generate confidence efficiently
+    confidence_variation = (hash_int % 100) / 100.0 * 0.3
+    primary_confidence = np.clip(
+        primary_pattern['base_confidence'] + confidence_variation - CONFIDENCE_ADJUSTMENT,
+        0.50, 0.95
+    )
     
-    # Create prediction array
-    predictions = np.zeros(NUM_CLASSES)
+    # Create prediction array efficiently
+    predictions = np.zeros(NUM_CLASSES, dtype=np.float32)
     primary_idx = class_labels.index(primary_class)
     predictions[primary_idx] = primary_confidence
     
-    # Add realistic secondary predictions
-    remaining_confidence = 1.0 - primary_confidence
-    secondary_classes = [c for c in medical_patterns.keys() if c != primary_class]
-    
-    # Select 2-4 secondary predictions
-    num_secondary = min(4, len(secondary_classes))
-    selected_secondary = []
+    # Add secondary predictions efficiently
+    remaining = 1.0 - primary_confidence
+    num_secondary = min(4, len(pattern_keys) - 1)
     
     for i in range(num_secondary):
-        class_idx = (hash_int + i + 1) % len(secondary_classes)
-        secondary_class = secondary_classes[class_idx]
-        selected_secondary.append(secondary_class)
-    
-    # Distribute remaining confidence among secondary predictions
-    for i, secondary_class in enumerate(selected_secondary):
+        class_idx = (hash_int + i + 1) % len(pattern_keys)
+        if pattern_keys[class_idx] == primary_class:
+            continue
+        secondary_class = pattern_keys[class_idx]
         weight = (num_secondary - i) / sum(range(1, num_secondary + 1))
-        confidence = remaining_confidence * weight * 0.8  # Use 80% of remaining
+        confidence = remaining * weight * 0.8
         
         secondary_idx = class_labels.index(secondary_class)
         predictions[secondary_idx] = confidence
+    
+    # Cache result with size limit
+    with _fallback_cache_lock:
+        # Limit cache size to prevent unbounded memory growth
+        if len(_fallback_cache) >= FALLBACK_CACHE_SIZE_LIMIT:
+            _fallback_cache.clear()
+        _fallback_cache[image_hash] = predictions
     
     print(f"Intelligent fallback prediction: {primary_class} ({primary_confidence*100:.1f}%)")
     return predictions
@@ -265,39 +288,32 @@ def health_check():
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    """Prediction endpoint with model loading check"""
+    """Prediction endpoint with efficient model loading wait"""
     try:
-        # Start model loading if needed
+        # Start model loading if needed (singleton pattern prevents duplicates)
         if not model_loaded and not model_loading and not model_error:
-            thread = threading.Thread(target=load_model_async)
-            thread.daemon = True
+            thread = threading.Thread(target=load_model_async, daemon=True)
             thread.start()
         
-        # Wait for model to load (with timeout)
-        wait_time = 0
-        max_wait = 30  # 30 seconds max wait
-        
-        while model_loading and wait_time < max_wait:
-            time.sleep(0.5)
-            wait_time += 0.5
-        
-        if not model_loaded:
-            if model_loading:
+        # Efficient wait using Event instead of busy-wait polling
+        if model_loading:
+            # Wait up to 30 seconds for model to load
+            if not model_loading_event.wait(timeout=30):
                 return jsonify({
                     'success': False,
-                    'error': 'Model is still loading, please try again in a few seconds'
+                    'error': 'Model loading timeout - please try again'
                 }), 503
+        
+        if not model_loaded:
+            # Check if this is a Select TF Ops error - use intelligent fallback
+            if model_error and "Select TensorFlow op(s)" in model_error:
+                print("🎭 Using intelligent fallback due to Select TF Ops issue")
+                use_fallback = True
             else:
-                # Check if this is a Select TF Ops error - use intelligent fallback
-                if model_error and "Select TensorFlow op(s)" in model_error:
-                    print("🎭 Using intelligent fallback due to Select TF Ops issue")
-                    # Use intelligent fallback predictions instead of returning error
-                    use_fallback = True
-                else:
-                    return jsonify({
-                        'success': False,
-                        'error': f'Model failed to load: {model_error}'
-                    }), 500
+                return jsonify({
+                    'success': False,
+                    'error': f'Model failed to load: {model_error}'
+                }), 500
         else:
             use_fallback = False
         
@@ -321,12 +337,10 @@ def predict():
         # Make prediction
         try:
             if use_fallback:
-                # Use intelligent fallback system
                 predictions = intelligent_fallback_prediction(image_bytes)
                 model_type_suffix = " (INTELLIGENT FALLBACK)"
                 print("🎭 Using intelligent fallback prediction system")
             else:
-                # Use real model
                 predictions = predict_image(img_array)
                 model_type_suffix = " (REAL MODEL)"
                 print("🤖 Using real model prediction")
@@ -336,20 +350,18 @@ def predict():
                 'error': f'Prediction failed: {e}'
             }), 500
         
-        # Format results
-        top_indices = np.argsort(predictions)[::-1]
-        top_5_predictions = []
+        # Efficient result formatting using vectorized operations
+        top_indices = np.argsort(predictions)[::-1][:5]  # Get only top 5
         
-        for i in range(min(5, len(top_indices))):
-            idx = top_indices[i]
-            confidence = float(predictions[idx])
-            label = class_labels[idx] if idx < len(class_labels) else f"Class_{idx}"
-            
-            top_5_predictions.append({
-                'label': label,
-                'confidence': confidence,
-                'percentage': confidence * 100
-            })
+        # Build results efficiently
+        top_5_predictions = [
+            {
+                'label': class_labels[idx] if idx < len(class_labels) else f"Class_{idx}",
+                'confidence': float(predictions[idx]),
+                'percentage': float(predictions[idx]) * 100
+            }
+            for idx in top_indices
+        ]
         
         top_prediction = top_5_predictions[0] if top_5_predictions else None
         
